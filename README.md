@@ -2,21 +2,27 @@
 
 Service-status JSON for the [PepJournal](https://www.pepjournal.com) iOS app.
 
-The app fetches `status.json` every 5 minutes (and on each foreground) from a Railway-independent host — this repo, served via GitHub Pages — so a banner can be raised when the backend is degraded or down.
+The app fetches `status.json` every 5 minutes (and on each foreground) from a Railway-independent host — **Cloudflare Pages**, served via `status.pepjournal.com` — so a banner can be raised when the backend is degraded or down.
 
 ## Live URL
 
-After GitHub Pages is enabled on the `main` branch root:
-
 ```
-https://jeffreycrum.github.io/pepjournal-status/status.json
+https://status.pepjournal.com/status.json
 ```
 
-This URL is configured in the iOS app via the `STATUS_JSON_URL` key in `Info.plist`.
+Configured in the iOS app via the `STATUS_JSON_URL` build setting in `Config/Secrets.base.xcconfig`, exposed at runtime through `Info.plist`.
 
-## Raising a banner during an outage
+## Updating the banner (during or after an outage)
 
-Edit `status.json`, commit, push. Users see the banner within ~5 minutes (or immediately on app foreground).
+Edit `status.json`, then deploy:
+
+```bash
+./deploy.sh
+```
+
+That runs `wrangler pages deploy` against the `pepjournal-status` Cloudflare Pages project. Updates go live in ~5 seconds. Users see them within their next 5-minute poll (or immediately on app foreground).
+
+### Banner schema
 
 ```json
 {
@@ -28,19 +34,17 @@ Edit `status.json`, commit, push. Users see the banner within ~5 minutes (or imm
 }
 ```
 
-### Fields
-
 | Field | Type | Notes |
 |---|---|---|
-| `active` | bool | Gates display. Set to `false` to clear the banner. |
+| `active` | bool | Gates display. `false` clears the banner. |
 | `id` | string | **Unique per incident.** Once a user dismisses an `id`, they won't see it again — but a new `id` will show. Use a date-prefixed slug, e.g. `2026-05-19-railway-outage`. |
-| `message` | string | One or two sentences. Plain text, no markdown. |
+| `message` | string | One or two sentences. Plain text. |
 | `severity` | `info` \| `warning` \| `critical` | Drives color and icon. |
-| `dismissible` | bool | `false` for sticky banners users can't hide (use sparingly). |
+| `dismissible` | bool | `false` for sticky banners (use sparingly). |
 
-## Resolving an incident
+### Resolving an incident
 
-Set `active: false`. Leave the rest in place as a record, or reset:
+Set `active: false` and re-deploy. Optional reset:
 
 ```json
 {
@@ -52,18 +56,31 @@ Set `active: false`. Leave the rest in place as a record, or reset:
 }
 ```
 
-## Design notes
+## Why Cloudflare Pages?
 
-- **Hosted independently of Railway** — when the backend is down, this stays up. That's the whole point.
-- **Silent failure on the client** — if this repo / GitHub Pages is also down, the app shows no error to the user; the banner just doesn't appear.
-- **No auth, no PHI** — `status.json` is fetched by every app install, so it must be publicly readable and contain no sensitive data.
-- **Cache-busting** — the iOS client uses `reloadIgnoringLocalCacheData` and GitHub Pages serves with a short cache TTL, so updates propagate quickly.
+- **Independent of Railway** — the entire point. If our backend is down, this stays up.
+- **CF global CDN** — fast everywhere; no cold-start.
+- **TLS handled by CF** — Universal SSL, auto-renewing.
+- **No build step** — static files, deploy is just upload.
+- **Free** for the traffic profile (every app install polls every 5 min — bandwidth is trivial).
 
-## Future: custom subdomain
+## First-time setup notes (already done, here for reference)
 
-To move to `status.pepjournal.com`:
-1. Add a `CNAME` file at the repo root with `status.pepjournal.com`
-2. Add a CNAME DNS record at the registrar: `status` → `jeffreycrum.github.io`
-3. Update `STATUS_JSON_URL` in the iOS build config to `https://status.pepjournal.com/status.json`
+- Cloudflare Pages project: `pepjournal-status`
+- Production branch: `main`
+- Custom domain: `status.pepjournal.com` (proxied CNAME → `pepjournal-status.pages.dev`)
+- Cert provisioned by Google via Cloudflare
+- GitHub Pages was used initially but is now disabled — Cloudflare is the sole host
 
-No app update needed — `STATUS_JSON_URL` is read at runtime from `Info.plist`.
+## Client behavior
+
+- iOS `StatusService` uses `URLSession.shared` directly (NOT `APIClient`) so it has no dependency on the backend.
+- Cache policy: `reloadIgnoringLocalCacheData` — every poll hits CF's edge fresh.
+- Silent failure: if this domain is unreachable, no banner shows and no error surfaces to the user. The app just behaves as if there's no active incident.
+- Per-incident dismiss: persisted in `UserDefaults` under `dismissedStatusBannerIDs`. A new `id` is required to re-show after dismiss.
+
+## Source
+
+- iOS implementation: `glp1-companion-frontend/Services/StatusService.swift`
+- Banner view: `glp1-companion-frontend/Views/Common/StatusBannerView.swift`
+- Tests: `glp1-companion-frontend/Tests/StatusServiceTests.swift`
